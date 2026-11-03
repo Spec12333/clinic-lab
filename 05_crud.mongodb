@@ -1,0 +1,281 @@
+// Sergey Israelyan
+// MongoDB Deep Dive Assignment - Clinic
+// Task 4, Part B: Insert, read, update, delete - with criteria
+// Date: 2026-11-03
+//
+// IMPORTANT:
+// RUN WITH: lab-admin. Run 04_seed.mongodb first - the check numbers refer to
+// freshly seeded data. The file runs from top to bottom; U7 is expected to
+// fail, so it is commented out: uncomment it and run only its lines.
+// Every command is wrapped in console.log(...), so its result is printed
+// in the output after running.
+
+
+use("clinic");
+
+
+// ============================================================
+// READ - R1 to R10
+// ============================================================
+
+// R1 - Every doctor
+console.log("R1:", db.users.find({ role: "doctor" }).toArray());
+
+// Result: 3 users - Dr. Elena Rossi, Dr. Hamid Karimi, Dr. Sofia Lindqvist
+
+// R2 - Doctors who are currently active
+console.log("R2:", db.users.find({ role: "doctor", active: true }).toArray());
+
+// Result: 2 users - Dr. Elena Rossi, Dr. Hamid Karimi
+
+// R3 - Patients who have no phone number
+console.log("R3:", db.users.find({ role: "patient", phone: { $exists: false } }).toArray());
+
+// Result: 1 user - Clara Meyer
+// (filtered by role, because Dr. Sofia Lindqvist has no phone either)
+
+// R4 - Patients allergic to penicillin (value inside an array in a subdocument)
+console.log("R4:", db.users.find({ role: "patient", "patient.allergies": "penicillin" }).toArray());
+
+// Result: 1 user - Ana Costa
+
+// R5 - Patients with no allergies recorded (empty array OR missing field)
+console.log("R5:", db.users.find({
+  role: "patient",
+  $or: [
+    { "patient.allergies": { $size: 0 } },
+    { "patient.allergies": { $exists: false } },
+  ],
+}).toArray());
+
+// Result: 2 users - Ben Okoye (empty array), Eva Nilsson (no field)
+
+// R6 - Patients born before 1990-01-01
+console.log("R6:", db.users.find({
+  role: "patient",
+  "patient.birthDate": {
+    $lt: new Date("1990-01-01T00:00:00Z"),
+  },
+}).toArray());
+
+// Result: 2 users - Ana Costa (1985), Dmitri Volkov (1972)
+
+// R7 - Appointments in March 2025, earliest first
+console.log("R7:", db.appointments.find({
+  start: {
+    $gte: new Date("2025-03-01T00:00:00Z"),
+    $lt: new Date("2025-04-01T00:00:00Z"),
+  },
+}).sort({ start: 1 }).toArray());
+
+// Result: 5 appointments - Blood pressure check (first), Vaccination,
+// Palpitations, Follow-up, Stress test
+
+// R8 - Completed appointments with a fee from 80 to 130 inclusive, only reason and fee
+console.log("R8:", db.appointments.find(
+  {
+    status: "completed",
+    fee: { $gte: 80, $lte: 130 },
+  },
+  {
+    _id: 0,
+    reason: 1,
+    fee: 1,
+  },
+).toArray());
+
+// Result: 3 documents
+// [
+//   { reason: 'Chest pain follow-up', fee: 120 },
+//   { reason: 'Fever', fee: 80 },
+//   { reason: 'Blood pressure check', fee: 90 }
+// ]
+
+// R9 - How many appointments have 'follow-up' in the reason, ignoring case
+console.log("R9:", db.appointments.countDocuments({
+  reason: { $regex: "follow-up", $options: "i" },
+}));
+
+// Result: 2 ('Chest pain follow-up', 'Follow-up')
+
+// R10 - Prescription for atenolol lasting 7 days or more (same element)
+console.log("R10:", db.appointments.find({
+  prescriptions: {
+    $elemMatch: {
+      drug: "atenolol",
+      days: { $gte: 7 },
+    },
+  },
+}).toArray());
+
+// Result: 1 appointment - 'Chest pain follow-up'
+
+
+// ============================================================
+// CHANGE - U1 to U7
+// ============================================================
+
+// U1 - Reactivate Dr. Sofia Lindqvist
+console.log("U1:", db.users.updateOne({ name: "Dr. Sofia Lindqvist" }, { $set: { active: true } }));
+
+// Result: { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0 }
+
+// U2 - Raise the fee of every scheduled appointment by 10
+console.log("U2:", db.appointments.updateMany({ status: "scheduled" }, { $inc: { fee: 10 } }));
+
+// Result: { acknowledged: true, matchedCount: 3, modifiedCount: 3, upsertedCount: 0 }
+
+// U3 - Add the allergy 'latex' to Ben Okoye without duplicates - run twice
+console.log("U3 (1st run):", db.users.updateOne(
+  { name: "Ben Okoye" },
+  { $addToSet: { "patient.allergies": "latex" } }
+));
+
+// Result: { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0 }
+
+console.log("U3 (2nd run):", db.users.updateOne(
+  { name: "Ben Okoye" },
+  { $addToSet: { "patient.allergies": "latex" } }
+));
+
+// Result: { acknowledged: true, matchedCount: 1, modifiedCount: 0, upsertedCount: 0 }
+// -> $addToSet does not add 'latex' again, so nothing was modified.
+
+// U4 - Cancel the 'Palpitations' appointment: status cancelled, fee 0
+console.log("U4:", db.appointments.updateOne(
+  { reason: "Palpitations" },
+  {
+    $set: {
+      status: "cancelled",
+      fee: 0,
+    },
+  }
+));
+
+// Result: { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0 }
+
+// U5 - Add a prescription to 'Blood pressure check' (no prescriptions field yet)
+console.log("U5:", db.appointments.updateOne(
+  { reason: "Blood pressure check" },
+  {
+    $push: {
+      prescriptions: {
+        drug: "amlodipine",
+        dose: "5mg",
+        days: 30,
+      },
+    },
+  },
+));
+
+// Result: { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0 }
+
+console.log("U5 check:", db.appointments.findOne({ reason: "Blood pressure check" }).prescriptions);
+
+// Result: [ { drug: 'amlodipine', dose: '5mg', days: 30 } ] - it now has 1 prescription
+// -> $push created the missing array.
+
+// U6 - Upsert Felix Brandt (does not exist yet)
+console.log("U6:", db.users.updateOne(
+  { email: "felix.brandt@example.com" },
+  {
+    $set: {
+      email: "felix.brandt@example.com",
+      name: "Felix Brandt",
+      role: "patient",
+      active: true,
+      patient: {
+        birthDate: new Date("1995-05-20T00:00:00Z"),
+        allergies: [],
+      },
+    },
+  },
+  { upsert: true },
+));
+
+// Result:
+// { acknowledged: true, insertedId: ObjectId('...'), matchedCount: 0,
+//   modifiedCount: 0, upsertedCount: 1 }
+// -> insertedId is the _id of the upserted document.
+
+console.log("U6 users count:", db.users.countDocuments());
+
+// Result: 10
+
+// U7 - Try to set a patient's role to 'superuser' (expected to fail)
+// Uncomment and run on its own:
+// console.log("U7:", db.users.updateOne(
+//   { role: "patient" },
+//   { $set: { role: "superuser" } }
+// ));
+// Result: MongoServerError: Document failed validation
+// -> Refused by the users validator: 'superuser' is not in the role enum.
+
+
+// ============================================================
+// REMOVE - D1 to D3
+// ============================================================
+
+// D1 - Delete Felix Brandt
+console.log("D1:", db.users.deleteOne({ name: "Felix Brandt" }));
+
+// Result: { acknowledged: true, deletedCount: 1 }
+
+// D2 - Delete every cancelled appointment
+console.log("D2:", db.appointments.deleteMany({ status: "cancelled" }));
+
+// Result: { acknowledged: true, deletedCount: 2 }
+// ('Stress test' from the seed and 'Palpitations' from U4)
+
+// D3 - Delete Ana Costa: first her appointments, then the user (ids looked up)
+const user = db.users.findOne({ name: "Ana Costa" });
+
+const deleteAppointment = db.appointments.deleteMany({ patientId: user._id });
+console.log("D3 appointments:", deleteAppointment);
+
+// Result: { acknowledged: true, deletedCount: 3 }
+
+const deleteUser = db.users.deleteOne({
+  _id: user._id,
+});
+console.log("D3 user:", deleteUser);
+
+// Result: { acknowledged: true, deletedCount: 1 }
+
+
+// ============================================================
+// FINAL CHECK
+// ============================================================
+
+console.log("FINAL counts:", {
+  users: db.users.countDocuments(),
+  appointments: db.appointments.countDocuments(),
+});
+
+// Result: { users: 8, appointments: 4 }
+
+
+// ============================================================
+// WRITTEN ANSWERS
+// ============================================================
+
+// 1) In D3, why does the order of the two deletions matter?
+//
+// MongoDB has no foreign keys and no cascading delete, so removing a user does
+// not touch the appointments that point to her. If I deleted Ana Costa first,
+// her 3 appointments would stay with a patientId that points to nothing
+// (orphaned references), and I could no longer look up her _id by name to
+// clean them up. Deleting the appointments first, while the user still
+// exists, leaves no dangling references.
+
+// 2) R10 needs two conditions on the same array element. Which operator, and
+//    where would plain dot notation disagree?
+//
+// I used $elemMatch, which requires one single prescription to match both
+// conditions. Example document (not in the dataset):
+//   { prescriptions: [ { drug: "atenolol", dose: "25mg", days: 3 },
+//                      { drug: "paracetamol", dose: "500mg", days: 10 } ] }
+// Dot notation (prescriptions.drug: "atenolol" and prescriptions.days >= 7)
+// matches it, because the first element has atenolol and the second has
+// 10 days. $elemMatch does not match it, because no single prescription is
+// atenolol AND at least 7 days.

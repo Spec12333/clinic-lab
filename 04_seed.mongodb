@@ -1,0 +1,293 @@
+// Sergey Israelyan
+// MongoDB Deep Dive Assignment - Clinic
+// Task 4, Part A: Seed data
+// Date: 2026-11-02
+//
+// IMPORTANT:
+// RUN WITH: lab-admin (the whole file, top to bottom).
+// Run 03_validators.mongodb first: this file relies on the validated
+// collections and only EMPTIES them (deleteMany), it never drops them,
+// so the validators stay in place. The file is re-runnable: every run
+// starts from empty collections and ends with 9 users and 9 appointments.
+// Every command is wrapped in console.log(...), so its result is printed
+// in the output after running.
+// Labels U1-U9 and A1-A9 are used only in comments, never as field values.
+
+
+use("clinic");
+
+
+// ============================================================
+// STEP 1 - Empty both collections (keep the validators)
+// RUN WITH: lab-admin
+// ============================================================
+
+console.log("STEP 1 empty appointments:", db.appointments.deleteMany({}));
+
+// Result: { acknowledged: true, deletedCount: 0 }
+// (on a rerun after Task 4 or 5 this shows how many old documents were removed)
+
+console.log("STEP 1 empty users:", db.users.deleteMany({}));
+
+// Result: { acknowledged: true, deletedCount: 0 }
+
+
+// ============================================================
+// STEP 2a - Insert the users
+// RUN WITH: lab-admin
+// ============================================================
+// Order in the array = U1 ... U9, so insertedIds[0] is U1, [8] is U9.
+
+const usersResult = db.users.insertMany([
+  // U1
+  {
+    name: "Dr. Elena Rossi",
+    email: "elena.rossi@clinic.test",
+    phone: "555-0201",
+    role: "doctor",
+    active: true,
+    doctor: { specialty: "cardiology", licenseNo: "MD-1001" },
+  },
+  // U2
+  {
+    name: "Dr. Hamid Karimi",
+    email: "hamid.karimi@clinic.test",
+    phone: "555-0202",
+    role: "doctor",
+    active: true,
+    doctor: { specialty: "pediatrics", licenseNo: "MD-1002" },
+  },
+  // U3 - no phone, inactive, no appointments
+  {
+    name: "Dr. Sofia Lindqvist",
+    email: "sofia.lindqvist@clinic.test",
+    role: "doctor",
+    active: false,
+    doctor: { specialty: "dermatology", licenseNo: "MD-1003" },
+  },
+  // U4
+  {
+    name: "Ana Costa",
+    email: "ana.costa@example.com",
+    phone: "555-0301",
+    role: "patient",
+    active: true,
+    patient: {
+      birthDate: new Date("1985-04-12T00:00:00Z"),
+      bloodType: "A+",
+      allergies: ["penicillin"],
+    },
+  },
+  // U5 - empty allergies array
+  {
+    name: "Ben Okoye",
+    email: "ben.okoye@example.com",
+    phone: "555-0302",
+    role: "patient",
+    active: true,
+    patient: {
+      birthDate: new Date("1990-11-02T00:00:00Z"),
+      bloodType: "O-",
+      allergies: [],
+    },
+  },
+  // U6 - no phone
+  {
+    name: "Clara Meyer",
+    email: "clara.meyer@example.com",
+    role: "patient",
+    active: true,
+    patient: {
+      birthDate: new Date("2015-06-30T00:00:00Z"),
+      bloodType: "B+",
+      allergies: ["peanuts", "latex"],
+    },
+  },
+  // U7 - no bloodType
+  {
+    name: "Dmitri Volkov",
+    email: "dmitri.volkov@example.com",
+    phone: "555-0304",
+    role: "patient",
+    active: true,
+    patient: {
+      birthDate: new Date("1972-02-19T00:00:00Z"),
+      allergies: ["sulfa"],
+    },
+  },
+  // U8 - no allergies field at all, no appointments
+  {
+    name: "Eva Nilsson",
+    email: "eva.nilsson@example.com",
+    phone: "555-0305",
+    role: "patient",
+    active: true,
+    patient: {
+      birthDate: new Date("1998-09-05T00:00:00Z"),
+      bloodType: "AB+",
+    },
+  },
+  // U9 - admin: neither doctor nor patient subdocument
+  {
+    name: "Maya Admin",
+    email: "maya@clinic.test",
+    phone: "555-0100",
+    role: "admin",
+    active: true,
+  },
+]);
+console.log("STEP 2a insert users:", usersResult);
+
+// Result:
+// {
+//   acknowledged: true,
+//   insertedIds: {
+//     '0': ObjectId('...'), '1': ObjectId('...'), '2': ObjectId('...'),
+//     '3': ObjectId('...'), '4': ObjectId('...'), '5': ObjectId('...'),
+//     '6': ObjectId('...'), '7': ObjectId('...'), '8': ObjectId('...')
+//   }
+// }
+
+
+// ============================================================
+// STEP 2b - Capture the returned _id values (never typed by hand)
+// RUN WITH: lab-admin
+// ============================================================
+
+const ids = usersResult.insertedIds;
+
+const rossi = ids[0];   // U1 Dr. Elena Rossi
+const karimi = ids[1];  // U2 Dr. Hamid Karimi
+                        // U3 Dr. Sofia Lindqvist (ids[2]) - no appointments
+const ana = ids[3];     // U4 Ana Costa
+const ben = ids[4];     // U5 Ben Okoye
+const clara = ids[5];   // U6 Clara Meyer
+const dmitri = ids[6];  // U7 Dmitri Volkov
+                        // U8 Eva Nilsson (ids[7]) - no appointments
+                        // U9 Maya Admin (ids[8])
+
+
+// ============================================================
+// STEP 2c - Insert the appointments using the captured ids
+// RUN WITH: lab-admin
+// ============================================================
+
+const appointmentsResult = db.appointments.insertMany([
+  // A1 - Rossi / Ana, with a prescription
+  {
+    doctorId: rossi,
+    patientId: ana,
+    start: new Date("2025-02-03T09:00:00Z"),
+    durationMin: 30,
+    reason: "Chest pain follow-up",
+    status: "completed",
+    fee: 120,
+    prescriptions: [{ drug: "atenolol", dose: "25mg", days: 30 }],
+  },
+  // A2 - Rossi / Dmitri
+  {
+    doctorId: rossi,
+    patientId: dmitri,
+    start: new Date("2025-02-03T10:00:00Z"),
+    durationMin: 45,
+    reason: "ECG",
+    status: "completed",
+    fee: 150,
+  },
+  // A3 - Karimi / Clara, with a prescription
+  {
+    doctorId: karimi,
+    patientId: clara,
+    start: new Date("2025-02-05T14:00:00Z"),
+    durationMin: 30,
+    reason: "Fever",
+    status: "completed",
+    fee: 80,
+    prescriptions: [{ drug: "paracetamol", dose: "250mg", days: 3 }],
+  },
+  // A4 - Rossi / Ana
+  {
+    doctorId: rossi,
+    patientId: ana,
+    start: new Date("2025-03-10T09:30:00Z"),
+    durationMin: 30,
+    reason: "Blood pressure check",
+    status: "completed",
+    fee: 90,
+  },
+  // A5 - Karimi / Ben
+  {
+    doctorId: karimi,
+    patientId: ben,
+    start: new Date("2025-03-12T11:00:00Z"),
+    durationMin: 20,
+    reason: "Vaccination",
+    status: "completed",
+    fee: 60,
+  },
+  // A6 - Rossi / Ben
+  {
+    doctorId: rossi,
+    patientId: ben,
+    start: new Date("2025-03-20T16:00:00Z"),
+    durationMin: 30,
+    reason: "Palpitations",
+    status: "scheduled",
+    fee: 100,
+  },
+  // A7 - Karimi / Clara
+  {
+    doctorId: karimi,
+    patientId: clara,
+    start: new Date("2025-03-25T14:00:00Z"),
+    durationMin: 30,
+    reason: "Follow-up",
+    status: "scheduled",
+    fee: 70,
+  },
+  // A8 - Rossi / Dmitri, cancelled
+  {
+    doctorId: rossi,
+    patientId: dmitri,
+    start: new Date("2025-03-28T09:00:00Z"),
+    durationMin: 30,
+    reason: "Stress test",
+    status: "cancelled",
+    fee: 0,
+  },
+  // A9 - Rossi / Ana
+  {
+    doctorId: rossi,
+    patientId: ana,
+    start: new Date("2025-04-02T10:00:00Z"),
+    durationMin: 30,
+    reason: "Test results",
+    status: "scheduled",
+    fee: 90,
+  },
+]);
+console.log("STEP 2c insert appointments:", appointmentsResult);
+
+// Result:
+// {
+//   acknowledged: true,
+//   insertedIds: {
+//     '0': ObjectId('...'), '1': ObjectId('...'), '2': ObjectId('...'),
+//     '3': ObjectId('...'), '4': ObjectId('...'), '5': ObjectId('...'),
+//     '6': ObjectId('...'), '7': ObjectId('...'), '8': ObjectId('...')
+//   }
+// }
+
+
+// ============================================================
+// STEP 3 - Count each collection
+// RUN WITH: lab-admin
+// ============================================================
+
+console.log("STEP 3 counts:", {
+  users: db.users.countDocuments(),
+  appointments: db.appointments.countDocuments(),
+});
+
+// Result:
+// { users: 9, appointments: 9 }   - expected: 9 users, 9 appointments

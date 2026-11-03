@@ -1,0 +1,548 @@
+// Sergey Israelyan
+// MongoDB Deep Dive Assignment - Clinic
+// Task 3: Schema validators with $jsonSchema
+// Date: 2026-11-02
+//
+// IMPORTANT:
+// RUN WITH: lab-admin (the whole file). The file is re-runnable from top to
+// bottom: it drops and recreates every collection it uses.
+// Inserts that are EXPECTED TO FAIL are commented out, because in a playground
+// the first error stops the rest of the file. To test one of them, uncomment
+// it, select its lines and run only those lines, then comment it out again.
+// Every command is wrapped in console.log(...), so its result is printed
+// in the output after running.
+
+
+use("clinic");
+
+
+// ============================================================
+// STEP 1 - Create the two validated collections
+// RUN WITH: lab-admin
+// ============================================================
+
+console.log("STEP 1 drop users:", db.users.drop());
+console.log("STEP 1 drop appointments:", db.appointments.drop());
+
+// Result: true / true (false if a collection did not exist yet)
+
+console.log("STEP 1 create users:", db.createCollection("users", {
+  validator: {
+    $jsonSchema: {
+      bsonType: "object",
+      required: ["name", "email", "role", "active"],
+      properties: {
+        // _id must be listed, otherwise additionalProperties: false
+        // would reject every document (every document has an _id).
+        _id: { bsonType: "objectId" },
+        name: { bsonType: "string", minLength: 2, maxLength: 80 },
+        email: { bsonType: "string", pattern: "^[^@]+@[^@]+\\.[^@]+$" },
+        phone: { bsonType: "string", pattern: "^[0-9+() -]{7,20}$" },
+        role: { bsonType: "string", enum: ["doctor", "patient", "admin"] },
+        active: { bsonType: "bool" },
+        createdAt: { bsonType: "date" },
+        doctor: {
+          bsonType: "object",
+          required: ["specialty", "licenseNo"],
+          properties: {
+            specialty: { bsonType: "string" },
+            licenseNo: { bsonType: "string", pattern: "^MD-\\d{4}$" },
+          },
+          additionalProperties: false,
+        },
+        patient: {
+          bsonType: "object",
+          required: ["birthDate"],
+          properties: {
+            birthDate: { bsonType: "date" },
+            bloodType: {
+              bsonType: "string",
+              enum: ["A+", "A-", "B+", "B-", "AB+", "AB-", "O+", "O-"],
+            },
+            allergies: {
+              bsonType: "array",
+              uniqueItems: true,
+              items: { bsonType: "string" },
+            },
+          },
+        },
+      },
+      additionalProperties: false,
+      // Role-dependent rules: one branch per role, exactly one must match.
+      oneOf: [
+        {
+          // doctor: must have doctor {}, must not have patient {}
+          properties: { role: { enum: ["doctor"] } },
+          required: ["doctor"],
+          not: { required: ["patient"] },
+        },
+        {
+          // patient: must have patient {}, must not have doctor {}
+          properties: { role: { enum: ["patient"] } },
+          required: ["patient"],
+          not: { required: ["doctor"] },
+        },
+        {
+          // admin: has neither subdocument
+          properties: { role: { enum: ["admin"] } },
+          not: { anyOf: [{ required: ["doctor"] }, { required: ["patient"] }] },
+        },
+      ],
+    },
+  },
+  validationLevel: "strict",
+  validationAction: "error",
+}));
+
+// Result: { ok: 1 }
+
+console.log("STEP 1 create appointments:", db.createCollection("appointments", {
+  validator: {
+    $and: [
+      {
+        $jsonSchema: {
+          bsonType: "object",
+          required: ["doctorId", "patientId", "start", "durationMin", "reason", "status", "fee"],
+          properties: {
+            _id: { bsonType: "objectId" },
+            doctorId: { bsonType: "objectId" },
+            patientId: { bsonType: "objectId" },
+            start: { bsonType: "date" },
+            durationMin: { bsonType: "number", minimum: 5, maximum: 240 },
+            reason: { bsonType: "string", minLength: 3, maxLength: 200 },
+            status: { bsonType: "string", enum: ["scheduled", "completed", "cancelled"] },
+            fee: { bsonType: "number", minimum: 0 },
+            notes: { bsonType: "string" },
+            prescriptions: {
+              bsonType: "array",
+              maxItems: 10,
+              items: {
+                bsonType: "object",
+                required: ["drug", "dose", "days"],
+                properties: {
+                  drug: { bsonType: "string" },
+                  dose: { bsonType: "string" },
+                  days: { bsonType: "number", minimum: 1, maximum: 365 },
+                },
+                additionalProperties: false,
+              },
+            },
+          },
+          additionalProperties: false,
+        },
+      },
+      // BONUS (step 6): doctorId and patientId must be different values.
+      // $jsonSchema cannot compare two fields, so $expr is combined with it.
+      { $expr: { $ne: ["$doctorId", "$patientId"] } },
+    ],
+  },
+  validationLevel: "strict",
+  validationAction: "error",
+}));
+
+// Result: { ok: 1 }
+
+
+// ============================================================
+// STEP 2 - Rejected documents (a)-(j)
+// RUN WITH: lab-admin - uncomment and run ONE case at a time
+// ============================================================
+
+// (a) Missing required field: fee
+// Rule broken: appointments requires fee.
+// console.log("(a):", db.appointments.insertOne({
+//   doctorId: ObjectId(),
+//   patientId: ObjectId(),
+//   start: new Date(),
+//   durationMin: 30,
+//   reason: "Checkup",
+//   status: "scheduled",
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (b) Wrong type: start is a string, not a date
+// Rule broken: start must have bsonType "date".
+// console.log("(b):", db.appointments.insertOne({
+//   doctorId: ObjectId(),
+//   patientId: ObjectId(),
+//   start: "2026-11-02T10:00:00",
+//   durationMin: 30,
+//   reason: "Checkup",
+//   status: "scheduled",
+//   fee: 50,
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (c) Enum violation: role "nurse"
+// Rule broken: role must be doctor, patient or admin (and no oneOf branch matches).
+// console.log("(c):", db.users.insertOne({
+//   name: "Nurse Test",
+//   email: "nurse@example.com",
+//   role: "nurse",
+//   active: true,
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (d) Number out of range: durationMin 0
+// Rule broken: durationMin must be between 5 and 240.
+// console.log("(d):", db.appointments.insertOne({
+//   doctorId: ObjectId(),
+//   patientId: ObjectId(),
+//   start: new Date(),
+//   durationMin: 0,
+//   reason: "Checkup",
+//   status: "scheduled",
+//   fee: 50,
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (e) Pattern failure: email has no @
+// Rule broken: email must match ^[^@]+@[^@]+\.[^@]+$
+// console.log("(e):", db.users.insertOne({
+//   name: "Bad Email",
+//   email: "not-an-email",
+//   role: "admin",
+//   active: true,
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (f) Extra field
+// Rule broken: additionalProperties is false in appointments.
+// console.log("(f):", db.appointments.insertOne({
+//   doctorId: ObjectId(),
+//   patientId: ObjectId(),
+//   start: new Date(),
+//   durationMin: 30,
+//   reason: "Checkup",
+//   status: "scheduled",
+//   fee: 50,
+//   unexpectedField: "not allowed",
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (g) Prescription item without days
+// Rule broken: each prescription requires drug, dose and days.
+// console.log("(g):", db.appointments.insertOne({
+//   doctorId: ObjectId(),
+//   patientId: ObjectId(),
+//   start: new Date(),
+//   durationMin: 30,
+//   reason: "Checkup",
+//   status: "scheduled",
+//   fee: 50,
+//   prescriptions: [{ drug: "paracetamol", dose: "500mg" }],
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (h) Null where a number is required
+// Rule broken: fee must be a number; null is its own BSON type.
+// console.log("(h):", db.appointments.insertOne({
+//   doctorId: ObjectId(),
+//   patientId: ObjectId(),
+//   start: new Date(),
+//   durationMin: 30,
+//   reason: "Checkup",
+//   status: "scheduled",
+//   fee: null,
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (i) Doctor without a doctor subdocument
+// Rule broken: the doctor branch requires doctor {}; the other branches fail on
+// role, so zero oneOf branches match.
+// console.log("(i):", db.users.insertOne({
+//   name: "Doctor Missing Data",
+//   email: "doctor-missing@example.com",
+//   role: "doctor",
+//   active: true,
+// }));
+// Result: MongoServerError: Document failed validation
+
+// (j) Patient that also carries a doctor subdocument
+// Rule broken: the patient branch forbids doctor {}; the other branches fail on
+// role, so zero oneOf branches match.
+// console.log("(j):", db.users.insertOne({
+//   name: "Patient With Doctor Data",
+//   email: "patient-doctor@example.com",
+//   role: "patient",
+//   active: true,
+//   patient: { birthDate: new Date("1990-01-01") },
+//   doctor: { specialty: "cardiology", licenseNo: "MD-1234" },
+// }));
+// Result: MongoServerError: Document failed validation
+
+console.log("STEP 2 counts:", {
+  users: db.users.countDocuments(),
+  appointments: db.appointments.countDocuments(),
+});
+
+// Result: { users: 0, appointments: 0 } - nothing invalid was stored.
+
+
+// ============================================================
+// STEP 3 - Accepted documents: one per role + one appointment
+// RUN WITH: lab-admin
+// ============================================================
+
+const valid = db.users.insertMany([
+  {
+    name: "John Smith",
+    email: "john@example.com",
+    role: "doctor",
+    active: true,
+    doctor: { specialty: "cardiology", licenseNo: "MD-1234" },
+  },
+  {
+    name: "Anna Brown",
+    email: "anna@example.com",
+    phone: "+374 99 123456",
+    role: "patient",
+    active: true,
+    patient: {
+      birthDate: new Date("1995-05-10"),
+      bloodType: "A+",
+      allergies: ["peanuts", "milk"],
+    },
+  },
+  {
+    name: "Admin User",
+    email: "admin@example.com",
+    role: "admin",
+    active: true,
+    createdAt: new Date(),
+  },
+]);
+console.log("STEP 3 insertMany users:", valid);
+
+// Result:
+// {
+//   acknowledged: true,
+//   insertedIds: {
+//     '0': ObjectId('...'),
+//     '1': ObjectId('...'),
+//     '2': ObjectId('...')
+//   }
+// }
+
+console.log("STEP 3 users:", db.users.find().toArray());
+
+// The appointment uses the ids returned above (doctor = John, patient = Anna).
+const validAppt = db.appointments.insertOne({
+  doctorId: valid.insertedIds[0],
+  patientId: valid.insertedIds[1],
+  start: new Date("2025-02-03T09:00:00Z"),
+  durationMin: 30,
+  reason: "Validator test",
+  status: "completed",
+  fee: 50,
+  notes: "accepted document",
+  prescriptions: [{ drug: "paracetamol", dose: "500mg", days: 5 }],
+});
+console.log("STEP 3 insert appointment:", validAppt);
+
+// Result:
+// { acknowledged: true, insertedId: ObjectId('...') }
+
+// Delete the test documents again.
+console.log("STEP 3 delete appointment:", db.appointments.deleteMany({ reason: "Validator test" }));
+
+// Result: { acknowledged: true, deletedCount: 1 }
+
+console.log("STEP 3 delete users:", db.users.deleteMany({
+  email: { $in: ["john@example.com", "anna@example.com", "admin@example.com"] },
+}));
+
+// Result: { acknowledged: true, deletedCount: 3 }
+
+
+// ============================================================
+// STEP 4 - Scratch migration
+// RUN WITH: lab-admin
+// ============================================================
+
+console.log("STEP 4 drop scratch_migration:", db.scratch_migration.drop());      // leftover from an earlier attempt, not needed
+console.log("STEP 4 drop scratch_appointments:", db.scratch_appointments.drop()); // re-runnable
+
+console.log("STEP 4 create scratch_appointments:", db.createCollection("scratch_appointments"));   // no validator
+
+// Result: { ok: 1 }
+
+console.log("STEP 4 insert 3 docs:", db.scratch_appointments.insertMany([
+  { status: "scheduled", fee: 100, reason: "Valid old appointment" },
+  { status: "done", fee: 200, reason: "Invalid status" },
+  { status: "scheduled", fee: -5, reason: "Invalid fee" },
+]));
+
+// Result: { acknowledged: true, insertedIds: { '0': ..., '1': ..., '2': ... } }
+// -> all three are stored, because there is no validator yet.
+
+// The rules for the scratch collection (used in (i) and (iv)).
+const scratchSchema = {
+  properties: {
+    status: { enum: ["scheduled", "completed", "cancelled"] },
+    fee: { bsonType: "number", minimum: 0 },
+  },
+};
+
+// (i) Add a validator with level moderate and action warn
+console.log("(i) collMod moderate/warn:", db.runCommand({
+  collMod: "scratch_appointments",
+  validator: { $jsonSchema: scratchSchema },
+  validationLevel: "moderate",
+  validationAction: "warn",
+}));
+
+// Result: { ok: 1 }
+
+// (ii) Insert another bad appointment
+console.log("(ii) bad insert under warn:", db.scratch_appointments.insertOne({
+  status: "done",
+  fee: 30,
+  reason: "Bad insert under warn",
+}));
+
+// Result: { acknowledged: true, insertedId: ObjectId('...') }
+// -> With validationAction "warn" the server does not refuse the document;
+//    it only writes a "Document would fail validation" warning to the mongod log.
+
+// (iii) Update one of the OLD bad documents (change its reason)
+console.log("(iii) update old bad doc:", db.scratch_appointments.updateOne(
+  { reason: "Invalid fee" },
+  { $set: { reason: "Invalid fee (edited)" } }
+));
+
+// Result: { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0 }
+// -> Accepted without any warning. With validationLevel "moderate", updates to
+//    documents that were already invalid before the validator existed are not
+//    checked at all, so old data can still be edited.
+
+// (iv) List every document that violates the rules
+console.log("(iv) violators:", db.scratch_appointments.find({ $nor: [{ $jsonSchema: scratchSchema }] }).toArray());
+
+// Result:
+// [
+//   { _id: ObjectId('...'), status: 'done', fee: 200, reason: 'Invalid status' },
+//   { _id: ObjectId('...'), status: 'scheduled', fee: -5, reason: 'Invalid fee (edited)' },
+//   { _id: ObjectId('...'), status: 'done', fee: 30, reason: 'Bad insert under warn' }
+// ]
+// -> 3 violators. $nor returns the documents that do NOT match the schema.
+
+// (v) Fix the violators, switch to strict + error, repeat the bad insert
+console.log("(v) fix status:", db.scratch_appointments.updateMany({ status: "done" }, { $set: { status: "completed" } }));
+
+// Result: { acknowledged: true, matchedCount: 2, modifiedCount: 2, upsertedCount: 0 }
+
+console.log("(v) fix fee:", db.scratch_appointments.updateMany({ fee: { $lt: 0 } }, { $set: { fee: 0 } }));
+
+// Result: { acknowledged: true, matchedCount: 1, modifiedCount: 1, upsertedCount: 0 }
+
+console.log("(v) violators left:", db.scratch_appointments.countDocuments({ $nor: [{ $jsonSchema: scratchSchema }] }));
+
+// Result: 0 - no violators left.
+
+console.log("(v) collMod strict/error:", db.runCommand({
+  collMod: "scratch_appointments",
+  validationLevel: "strict",
+  validationAction: "error",
+}));
+
+// Result: { ok: 1 }
+
+// Repeat the bad insert from (ii) - uncomment and run on its own:
+// console.log("(v) bad insert again:", db.scratch_appointments.insertOne({
+//   status: "done",
+//   fee: 30,
+//   reason: "Bad insert under warn",
+// }));
+// Result: MongoServerError: Document failed validation
+// -> The same document as in (ii) is now refused.
+
+// (vi) Drop the scratch collection
+console.log("(vi) drop scratch_appointments:", db.scratch_appointments.drop());
+
+// Result: true
+
+
+// ============================================================
+// STEP 5 - Inspect validationLevel and validationAction of users
+// RUN WITH: lab-admin
+// ============================================================
+
+const usersOptions = db.getCollectionInfos({ name: "users" })[0].options;
+console.log("STEP 5 users options:", {
+  validationLevel: usersOptions.validationLevel,
+  validationAction: usersOptions.validationAction,
+});
+
+// Result:
+// { validationLevel: 'strict', validationAction: 'error' }
+
+
+// ============================================================
+// STEP 6 - BONUS: doctorId and patientId must be different
+// RUN WITH: lab-admin
+// ============================================================
+// The rule is the $expr part of the appointments validator in step 1:
+//   { $expr: { $ne: ["$doctorId", "$patientId"] } }
+// $jsonSchema checks each field on its own and cannot compare two fields,
+// so it is combined with $expr inside $and.
+
+// Uncomment and run on its own (select both statements together):
+// const samePerson = ObjectId();
+// console.log("BONUS:", db.appointments.insertOne({
+//   doctorId: samePerson,
+//   patientId: samePerson,
+//   start: new Date(),
+//   durationMin: 30,
+//   reason: "Self appointment",
+//   status: "scheduled",
+//   fee: 50,
+// }));
+// Result: MongoServerError: Document failed validation
+// -> Every $jsonSchema rule is satisfied; only the $expr rule fails.
+
+console.log("FINAL counts:", {
+  users: db.users.countDocuments(),
+  appointments: db.appointments.countDocuments(),
+});
+
+// Result: { users: 0, appointments: 0 } - both validated collections are empty and ready for Task 4.
+
+
+// ============================================================
+// WRITTEN ANSWERS
+// ============================================================
+
+// 1) Name two rules in this project that a validator cannot express.
+//
+// A validator only sees the one document being written, never other documents
+// or collections. So it cannot check that doctorId points to a user that really
+// exists and has role "doctor" (or that patientId points to a patient). It also
+// cannot enforce that an email is unique across all users or that a doctor has
+// no two overlapping appointments; those need a unique index or application logic.
+
+// 2) What is the difference between strict and moderate, and when would you
+//    start with moderate?
+//
+// With strict, every insert and every update is checked against the validator.
+// With moderate, inserts and updates to documents that are already valid are
+// checked, but documents that were invalid before the validator was added can
+// still be updated without checks. I would start with moderate (often with warn)
+// when adding a validator to a collection that already has old data, so the
+// application keeps working while I find and fix the violators, and then switch
+// to strict.
+
+
+// ============================================================
+// SUBMISSION CHECK
+// ============================================================
+//
+// [x] Both collections are dropped and recreated with strict / error validators.
+// [x] Role-dependent rules are enforced with oneOf (one branch per role).
+// [x] 10 rejected inserts (a)-(j), each with the broken rule and the error.
+// [x] 4 accepted documents (doctor, patient, admin, appointment with a
+//     prescription), deleted afterwards.
+// [x] Scratch migration (i)-(vi) with results and explanations.
+// [x] validationLevel and validationAction of users printed.
+// [x] Bonus: doctorId != patientId with $expr, one rejected insert.
+// [x] Two written answers are included.

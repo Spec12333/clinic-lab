@@ -1,0 +1,448 @@
+// Sergey Israelyan
+// MongoDB Deep Dive Assignment - Clinic
+// Task 5: Relations with $lookup
+// Date: 2026-11-03
+//
+// IMPORTANT:
+// RUN WITH: lab-admin (the whole file, top to bottom).
+// Run 04_seed.mongodb first - the check numbers refer to freshly seeded data
+// (05_crud changes and deletes data). The file is re-runnable: L7 removes any
+// leftover test appointments before inserting and deletes them at the end.
+// Every command is wrapped in console.log(...), so its result is printed
+// in the output after running.
+
+
+use("clinic");
+
+
+// ============================================================
+// L1 - Every appointment with doctor's and patient's name, earliest first
+// Output fields: start, doctor, patient, reason, status
+// ============================================================
+
+console.log("L1:", db.appointments.aggregate([
+  {
+    $lookup: {
+      from: "users",
+      localField: "doctorId",
+      foreignField: "_id",
+      as: "doctor",
+    },
+  },
+  {
+    $unwind: "$doctor",
+  },
+  {
+    $lookup: {
+      from: "users",
+      localField: "patientId",
+      foreignField: "_id",
+      as: "patient",
+    },
+  },
+  {
+    $unwind: "$patient",
+  },
+  {
+    $project: {
+      _id: 0,
+      start: 1,
+      doctor: "$doctor.name",
+      patient: "$patient.name",
+      reason: 1,
+      status: 1,
+    },
+  },
+  {
+    $sort: {
+      start: 1,
+    },
+  },
+]).toArray());
+
+// Result: 9 documents, first one:
+// { start: ISODate('2025-02-03T09:00:00.000Z'), doctor: 'Dr. Elena Rossi',
+//   patient: 'Ana Costa', reason: 'Chest pain follow-up', status: 'completed' }
+// Two lookups into the same collection need two different "as" names
+// (doctor and patient); $unwind turns each one-element array into an object.
+
+
+// ============================================================
+// L2 - Every doctor with the number of appointments (including 0)
+// Output fields: doctor, appointments
+// ============================================================
+
+console.log("L2:", db.users.aggregate([
+  {
+    $match: {
+      role: "doctor",
+    },
+  },
+  {
+    $lookup: {
+      from: "appointments",
+      localField: "_id",
+      foreignField: "doctorId",
+      as: "appointments",
+    },
+  },
+  {
+    $project: {
+      _id: 0,
+      doctor: "$name",
+      appointments: { $size: "$appointments" },
+    },
+  },
+  {
+    $sort: {
+      appointments: -1,
+      doctor: 1,
+    },
+  },
+]).toArray());
+
+// Result:
+// [
+//   { doctor: 'Dr. Elena Rossi', appointments: 6 },
+//   { doctor: 'Dr. Hamid Karimi', appointments: 3 },
+//   { doctor: 'Dr. Sofia Lindqvist', appointments: 0 }
+// ]
+
+
+// ============================================================
+// L3 - Every patient with the number of appointments (including 0)
+// Output fields: patient, appointments
+// ============================================================
+
+console.log("L3:", db.users.aggregate([
+  {
+    $match: {
+      role: "patient",
+    },
+  },
+  {
+    $lookup: {
+      from: "appointments",
+      localField: "_id",
+      foreignField: "patientId",
+      as: "appointments",
+    },
+  },
+  {
+    $project: {
+      _id: 0,
+      patient: "$name",
+      appointments: { $size: "$appointments" },
+    },
+  },
+  {
+    $sort: {
+      appointments: -1,
+      patient: 1,
+    },
+  },
+]).toArray());
+
+// Result:
+// [
+//   { patient: 'Ana Costa', appointments: 3 },
+//   { patient: 'Ben Okoye', appointments: 2 },
+//   { patient: 'Clara Meyer', appointments: 2 },
+//   { patient: 'Dmitri Volkov', appointments: 2 },
+//   { patient: 'Eva Nilsson', appointments: 0 }
+// ]
+
+
+// ============================================================
+// L4 - Fees per doctor from completed appointments, highest first
+// Output fields: doctor, appointments, revenue
+// ============================================================
+
+console.log("L4:", db.appointments.aggregate([
+  {
+    $match: {
+      status: "completed",
+    },
+  },
+  {
+    $lookup: {
+      from: "users",
+      localField: "doctorId",
+      foreignField: "_id",
+      as: "doctor",
+    },
+  },
+  {
+    $unwind: "$doctor",
+  },
+  {
+    $group: {
+      _id: "$doctor._id",
+      doctor: { $first: "$doctor.name" },
+      appointments: { $sum: 1 },
+      revenue: { $sum: "$fee" },
+    },
+  },
+  {
+    $project: {
+      _id: 0,
+      doctor: 1,
+      appointments: 1,
+      revenue: 1,
+    },
+  },
+  {
+    $sort: {
+      revenue: -1,
+    },
+  },
+]).toArray());
+
+// Result:
+// [
+//   { doctor: 'Dr. Elena Rossi', appointments: 3, revenue: 360 },
+//   { doctor: 'Dr. Hamid Karimi', appointments: 2, revenue: 140 }
+// ]
+
+
+// ============================================================
+// L5 - Patients who have never had an appointment
+// Output fields: name, email
+// ============================================================
+
+console.log("L5:", db.users.aggregate([
+  {
+    $match: {
+      role: "patient",
+    },
+  },
+  {
+    $lookup: {
+      from: "appointments",
+      localField: "_id",
+      foreignField: "patientId",
+      as: "appointments",
+    },
+  },
+  {
+    $match: {
+      appointments: { $size: 0 },
+    },
+  },
+  {
+    $project: {
+      _id: 0,
+      name: 1,
+      email: 1,
+    },
+  },
+]).toArray());
+
+// Result:
+// [ { name: 'Eva Nilsson', email: 'eva.nilsson@example.com' } ]
+
+
+// ============================================================
+// L6 - Per specialty: appointments and average fee, not cancelled,
+//      rounded to 2 decimals, highest average first
+// Output fields: specialty, appointments, avgFee
+// ============================================================
+
+console.log("L6:", db.users.aggregate([
+  {
+    $match: {
+      role: "doctor",
+    },
+  },
+  {
+    $lookup: {
+      from: "appointments",
+      localField: "_id",
+      foreignField: "doctorId",
+      as: "appointments",
+    },
+  },
+  {
+    $unwind: "$appointments",
+  },
+  {
+    $match: {
+      "appointments.status": { $ne: "cancelled" },
+    },
+  },
+  {
+    $group: {
+      _id: "$doctor.specialty",
+      appointments: { $sum: 1 },
+      avgFee: { $avg: "$appointments.fee" },
+    },
+  },
+  {
+    $project: {
+      _id: 0,
+      specialty: "$_id",
+      appointments: 1,
+      avgFee: { $round: ["$avgFee", 2] },
+    },
+  },
+  {
+    $sort: {
+      avgFee: -1,
+    },
+  },
+]).toArray());
+
+// Result:
+// [
+//   { appointments: 5, specialty: 'cardiology', avgFee: 110 },
+//   { appointments: 3, specialty: 'pediatrics', avgFee: 70 }
+// ]
+// Without the $ne filter, cardiology would count the cancelled 'Stress test'
+// (fee 0): 6 appointments and avgFee 91.67. Dermatology does not appear,
+// because Dr. Lindqvist has no appointments and $unwind drops empty arrays.
+
+
+// ============================================================
+// L7 - BONUS: find appointments with a broken doctor reference
+// ============================================================
+
+// Re-runnable: remove leftovers from an earlier run.
+console.log("L7 cleanup before:", db.appointments.deleteMany({
+  reason: { $in: ["Test: missing doctor", "Test: patient as doctor"] },
+}));
+
+const badDoctorId = ObjectId();   // an _id that exists in no collection
+const patient = db.users.findOne({ name: "Ana Costa" });
+const otherPatient = db.users.findOne({ name: "Ben Okoye" });
+
+// Two different patients are used in (b), because the Task 3 validator
+// rejects doctorId == patientId.
+console.log("L7 insert bad appointments:", db.appointments.insertMany([
+  {
+    // (a) doctorId points to nothing
+    doctorId: badDoctorId,
+    patientId: patient._id,
+    start: new Date(),
+    durationMin: 15,
+    reason: "Test: missing doctor",
+    status: "scheduled",
+    fee: 50,
+  },
+  {
+    // (b) doctorId points to a patient
+    doctorId: otherPatient._id,
+    patientId: patient._id,
+    start: new Date(),
+    durationMin: 15,
+    reason: "Test: patient as doctor",
+    status: "scheduled",
+    fee: 50,
+  },
+]));
+
+// Result: { acknowledged: true, insertedIds: { '0': ObjectId('...'), '1': ObjectId('...') } }
+// -> Both pass the validator: it only checks that doctorId is an ObjectId.
+
+// (a) Appointments whose doctorId matches no user: the lookup array is empty
+console.log("L7 (a):", db.appointments.aggregate([
+  {
+    $lookup: {
+      from: "users",
+      localField: "doctorId",
+      foreignField: "_id",
+      as: "doctor",
+    },
+  },
+  {
+    $match: {
+      doctor: { $size: 0 },
+    },
+  },
+]).toArray());
+
+// Result: 1 document - reason 'Test: missing doctor', doctor: []
+
+// (b) Appointments whose doctorId belongs to a user who is not a doctor
+console.log("L7 (b):", db.appointments.aggregate([
+  {
+    $lookup: {
+      from: "users",
+      localField: "doctorId",
+      foreignField: "_id",
+      as: "doctor",
+    },
+  },
+  {
+    $unwind: "$doctor",
+  },
+  {
+    $match: {
+      "doctor.role": "patient",
+    },
+  },
+]).toArray());
+
+// Result: 1 document - reason 'Test: patient as doctor', doctor.name 'Ben Okoye',
+// doctor.role 'patient'
+
+// Delete both test appointments
+console.log("L7 delete (a):", db.appointments.deleteOne({
+  reason: "Test: missing doctor",
+}));
+
+// Result: { acknowledged: true, deletedCount: 1 }
+
+console.log("L7 delete (b):", db.appointments.deleteOne({
+  reason: "Test: patient as doctor",
+}));
+
+// Result: { acknowledged: true, deletedCount: 1 }
+
+console.log("L7 appointments left:", db.appointments.countDocuments());
+
+// Result: 9 - back to the seeded data.
+
+
+// ============================================================
+// WRITTEN ANSWERS
+// ============================================================
+
+// 1) L2 and L3 start from users, not from appointments. What would have
+//    happened to Dr. Lindqvist and to Eva Nilsson otherwise?
+//
+// Starting from appointments, every result comes from an existing appointment,
+// and Dr. Lindqvist and Eva Nilsson have none, so no document would ever
+// mention them. They would disappear from the result instead of appearing
+// with 0. Starting from users keeps every doctor and patient; for them
+// $lookup simply returns an empty array, and $size turns it into 0.
+
+// 2) Why can a validator not guarantee that a doctorId belongs to a doctor,
+//    how does L7(b) detect it, and how could it be prevented?
+//
+// A validator only sees the appointment being written: it can check that
+// doctorId is an ObjectId, but it cannot look into users to see what that id
+// refers to, and MongoDB has no foreign keys. L7(b) follows the reference with
+// $lookup and then checks the role of the looked-up user, which finds the
+// appointment whose "doctor" is a patient. To prevent it, the application can
+// load the user by doctorId and check role: "doctor" before inserting; in the
+// design, a separate doctors collection would make a patient id impossible to use.
+
+// 3) One advantage and one disadvantage of storing doctors and patients
+//    together in users with a role field.
+//
+// Advantage: every person has one place for name, email, phone and login data,
+// so one unique index on email covers everybody, and a person who changes role
+// stays the same document. Disadvantage: the collection mixes different kinds
+// of documents, so the validator needs oneOf branches, every query must filter
+// by role (as in R3), and nothing stops doctorId from pointing to a patient.
+
+
+// ============================================================
+// SUBMISSION CHECK
+// ============================================================
+//
+// [x] L1-L6 with the requested output fields, each followed by its result.
+// [x] L2 and L3 keep doctors and patients with no appointments (count 0).
+// [x] L6 excludes cancelled appointments, rounds to 2 decimals, sorts by avgFee.
+// [x] Bonus L7: two bad appointments inserted, found by (a) and (b), deleted.
+// [x] Three written answers are included.

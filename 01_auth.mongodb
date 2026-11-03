@@ -1,0 +1,270 @@
+// Sergey Israelyan
+// MongoDB Deep Dive Assignment - Clinic
+// Task 1: Lab server and authentication mechanisms
+// Date: 2026-10-31
+//
+// IMPORTANT:
+// This file is a lab report divided into blocks. Run each block only with the
+// saved connection named in its heading. The server must be restarted between
+// STEP 3 and STEP 4 after enabling authorization in mongod_lab.conf.
+// Passwords below are placeholders in this submission copy.
+// Every command is wrapped in console.log(...), so its result is printed
+// in the output after running.
+
+
+// ============================================================
+// STEP 2 - Open door: list databases without credentials
+// RUN WITH: lab-open (mongodb://localhost:27019)
+// ============================================================
+
+console.log("STEP 2 listDatabases:", db.adminCommand({ listDatabases: 1 })); // playground form of "show dbs"
+
+// Result:
+// admin   40.00 KiB
+// config  12.00 KiB
+// local   72.00 KiB
+
+
+// ============================================================
+// STEP 3 - First user: administrator in the admin database
+// RUN WITH: lab-open, while authorization is still disabled
+// ============================================================
+
+use("admin");
+
+console.log("STEP 3 createUser labAdmin:", db.createUser({
+  user: "labAdmin",
+  pwd: "<password>",
+  roles: [
+    { role: "userAdminAnyDatabase", db: "admin" },
+    { role: "readWriteAnyDatabase", db: "admin" },
+  ],
+}));
+
+// Result: { ok: 1 }
+//
+// After this step:
+// 1. Stop mongod.
+// 2. Set security.authorization: enabled in mongod_lab.conf.
+// 3. Start mongod again.
+// 4. Continue with the lab-admin connection.
+
+
+// ============================================================
+// STEP 4 - Lock it: unauthenticated database listing
+// RUN WITH: lab-open, after authorization is enabled and mongod restarted
+// ============================================================
+
+console.log("STEP 4 listDatabases:", db.adminCommand({ listDatabases: 1 }));
+
+// Result:
+// MongoServerError[Unauthorized]: Command listDatabases requires authentication
+
+
+// ============================================================
+// STEP 5 - Log in as administrator
+// RUN WITH: lab-admin (authSource=admin)
+// ============================================================
+
+console.log("STEP 5 connectionStatus:", db.runCommand({ connectionStatus: 1 }));
+
+// Result:
+// {
+//   authInfo: {
+//     authenticatedUsers: [ { user: 'labAdmin', db: 'admin' } ],
+//     authenticatedUserRoles: [
+//       { role: 'readWriteAnyDatabase', db: 'admin' },
+//       { role: 'userAdminAnyDatabase', db: 'admin' }
+//     ]
+//   },
+//   ok: 1
+// }
+
+
+// ============================================================
+// STEP 6a - Two users in the clinic database, one mechanism each
+// RUN WITH: lab-admin
+// ============================================================
+
+use("clinic");
+
+// These users already exist on the lab server. The createUser commands
+// below document how they were created; do not rerun them unless you first
+// remove the existing users or use a fresh lab database.
+
+console.log("STEP 6a createUser mechSha256:", db.createUser({
+  user: "mechSha256",
+  pwd: "<password>",
+  roles: [{ role: "readWrite", db: "clinic" }],
+  mechanisms: ["SCRAM-SHA-256"],
+}));
+
+// Result when originally created: { ok: 1 }
+
+console.log("STEP 6a createUser mechSha1:", db.createUser({
+  user: "mechSha1",
+  pwd: "<password>",
+  roles: [{ role: "readWrite", db: "clinic" }],
+  mechanisms: ["SCRAM-SHA-1"],
+}));
+
+// Result when originally created: { ok: 1 }
+
+console.log("STEP 6a getUsers:", db.getUsers());
+
+// Result:
+// users: [
+//   {
+//     _id: 'clinic.mechSha1',
+//     user: 'mechSha1',
+//     db: 'clinic',
+//     roles: [ { role: 'readWrite', db: 'clinic' } ],
+//     mechanisms: [ 'SCRAM-SHA-1' ]
+//   },
+//   {
+//     _id: 'clinic.mechSha256',
+//     user: 'mechSha256',
+//     db: 'clinic',
+//     roles: [ { role: 'readWrite', db: 'clinic' } ],
+//     mechanisms: [ 'SCRAM-SHA-256' ]
+//   }
+// ],
+// ok: 1
+
+
+// ============================================================
+// STEP 6b - Connect as each user three ways (authSource=clinic)
+// RUN EACH CHECK WITH ITS OWN SAVED CONNECTION:
+// mech1-default, mech1-sha1, mech1-sha256,
+// mech256-default, mech256-sha1, mech256-sha256
+// ============================================================
+
+// Run this command separately after connecting with each saved connection:
+console.log("STEP 6b connectionStatus:", db.runCommand({ connectionStatus: 1 }));
+
+// Results:
+// mech1-default (mechSha1, no authMechanism):
+//   authenticatedUsers: [ { user: 'mechSha1', db: 'clinic' } ], ok: 1
+//
+// mech1-sha1 (mechSha1, SCRAM-SHA-1):
+//   authenticatedUsers: [ { user: 'mechSha1', db: 'clinic' } ], ok: 1
+//
+// mech1-sha256 (mechSha1, SCRAM-SHA-256):
+//   Connection failed: MongoServerError: Authentication failed.
+//
+// mech256-default (mechSha256, no authMechanism):
+//   authenticatedUsers: [ { user: 'mechSha256', db: 'clinic' } ], ok: 1
+//
+// mech256-sha1 (mechSha256, SCRAM-SHA-1):
+//   Connection failed: MongoServerError: Authentication failed.
+//
+// mech256-sha256 (mechSha256, SCRAM-SHA-256):
+//   authenticatedUsers: [ { user: 'mechSha256', db: 'clinic' } ], ok: 1
+//
+// A failed login happens during connection establishment, so the error is
+// shown by the extension or mongosh before connectionStatus can run.
+
+// THE GRID
+// +--------------+------------------+---------------------------+---------------------------+
+// | Connect as   | no authMechanism | SCRAM-SHA-1               | SCRAM-SHA-256             |
+// +--------------+------------------+---------------------------+---------------------------+
+// | mechSha1     | ok               | ok                        | failed: Authentication    |
+// |              |                  |                           | failed.                   |
+// +--------------+------------------+---------------------------+---------------------------+
+// | mechSha256   | ok               | failed: Authentication    | ok                        |
+// |              |                  | failed.                   |                           |
+// +--------------+------------------+---------------------------+---------------------------+
+
+
+// ============================================================
+// STEP 7 - Mechanisms the server allows
+// RUN WITH: lab-admin
+// ============================================================
+
+console.log("STEP 7 getParameter:", db.adminCommand({ getParameter: 1, authenticationMechanisms: 1 }));
+
+// Result:
+// {
+//   authenticationMechanisms: [
+//     'MONGODB-X509',
+//     'SCRAM-SHA-1',
+//     'SCRAM-SHA-256'
+//   ],
+//   ok: 1
+// }
+
+
+// ============================================================
+// STEP 8 - Wrong authSource
+// RUN WITH: mech256-wrongsrc (mechSha256 with authSource=admin)
+// ============================================================
+
+console.log("STEP 8 connectionStatus:", db.runCommand({ connectionStatus: 1 }));
+
+// Result:
+// Connection refused before the command runs:
+// MongoServerError: Authentication failed.
+//
+// mongod log:
+// UserNotFound: Could not find user "mechSha256" for db "admin"
+
+
+// ============================================================
+// WRITTEN ANSWERS
+// ============================================================
+
+// 1) Why is the first user created before authorization is switched on?
+//
+// While authorization is disabled, the first administrator can be created
+// without authenticating, so we can set up access before locking the server.
+// MongoDB also has a localhost exception that allows creating the first user
+// when authorization is enabled and no users exist; that exception closes
+// after the first user is created. Creating labAdmin first avoids relying on
+// that one-time exception.
+
+// 2) What does authSource tell the server, and why did step 8 behave as it did?
+//
+// authSource tells MongoDB which database contains the user's credentials.
+// mechSha256 was created in the clinic database, so authSource=admin made
+// the server look for admin.mechSha256 instead. The login failed because that
+// user does not exist in admin; the client showed the general authentication
+// failure message.
+
+// 3) What did the connection with no authMechanism do for each user?
+//
+// Both users connected successfully without an explicit authMechanism:
+// mechSha1 authenticated using SCRAM-SHA-1, and mechSha256 using
+// SCRAM-SHA-256. This suggests the client and server negotiate a mechanism
+// supported by the user's stored credentials. Forcing the other mechanism
+// failed, even though the server supports both mechanisms in general.
+
+// 4) Why is bindIp 0.0.0.0 with authorization disabled dangerous?
+//
+// bindIp 0.0.0.0 makes mongod listen on all network interfaces, potentially
+// allowing other reachable machines to connect. With authorization disabled,
+// those clients do not need credentials and may read, modify, or delete data.
+// This can expose every database to unauthorized access or destruction.
+
+
+// ============================================================
+// SUBMISSION CHECK
+// ============================================================
+//
+// [x] mongod_lab.conf is submitted separately.
+// [x] This file includes commands and recorded results as comments.
+// [x] Connection-specific blocks are labeled.
+// [x] The grid is filled.
+// [x] Four written answers are included.
+// [x] Passwords are replaced with <password> in this submission copy.
+//
+// Saved connection strings (for reference only; do not include real passwords
+// in the submitted file):
+// lab-open          mongodb://localhost:27019
+// lab-admin         mongodb://labAdmin:<password>@localhost:27019/?authSource=admin
+// mech1-default     mongodb://mechSha1:<password>@localhost:27019/?authSource=clinic
+// mech1-sha1        mongodb://mechSha1:<password>@localhost:27019/?authSource=clinic&authMechanism=SCRAM-SHA-1
+// mech1-sha256      mongodb://mechSha1:<password>@localhost:27019/?authSource=clinic&authMechanism=SCRAM-SHA-256
+// mech256-default   mongodb://mechSha256:<password>@localhost:27019/?authSource=clinic
+// mech256-sha1      mongodb://mechSha256:<password>@localhost:27019/?authSource=clinic&authMechanism=SCRAM-SHA-1
+// mech256-sha256    mongodb://mechSha256:<password>@localhost:27019/?authSource=clinic&authMechanism=SCRAM-SHA-256
+// mech256-wrongsrc  mongodb://mechSha256:<password>@localhost:27019/?authSource=admin

@@ -1,0 +1,20 @@
+# MongoDB data directory (database files, journal, password hashes)
+data/
+
+# MongoDB server logs
+logs/
+*.log
+
+# MongoDB dumps / exports (may contain real data)
+dump/
+
+# Secrets
+.env
+
+# Editor / OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*~
